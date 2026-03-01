@@ -3,7 +3,7 @@
     "name": "DesktopMediaRemote",
     "slug": "DesktopMediaRemote",
     "version": "1.0.0",
-    "orientation": "portrait",
+    "orientation": "landscape",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "splash": {
@@ -12,7 +12,14 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "UIStatusBarHidden": true,
+        "UIViewControllerBasedStatusBarAppearance": false
+      }
+    },
+    "androidStatusBar": {
+      "hidden": true
     },
     "android": {
       "adaptiveIcon": {
