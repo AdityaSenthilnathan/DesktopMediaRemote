@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
-  TextInput,
   Pressable,
   Image,
   StyleSheet,
@@ -30,24 +29,22 @@ function fmtMs(ms: number) {
 
 export default function App() {
   const [host, setHost] = useState("http://192.168.86.63:3001"); // change this
-  const [token, setToken] = useState("tok");
+  const [token, setToken] = useState("changeme");
   const [status, setStatus] = useState("Idle");
   const [data, setData] = useState<any>(null);
-  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [activeScreen, setActiveScreen] = useState<"spotify" | "clock">("spotify");
+  const [currentTime, setCurrentTime] = useState(() => new Date());
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const { width, height } = useWindowDimensions();
-  const isLandscape = width > height;
 
-  const drawerHeight = Math.max(160, Math.min(240, Math.round(height * 0.33)));
-  const drawerClosedY = -drawerHeight;
-
+  const screenY = useRef(new Animated.Value(0)).current;
   const timerRef = useRef<NodeJS.Timeout | null>(null);
-  const drawerY = useRef(new Animated.Value(drawerClosedY)).current;
-  const drawerOpenRef = useRef(false);
+  const activeScreenRef = useRef(activeScreen);
+  const gestureDirectionRef = useRef<"vertical" | "horizontal" | null>(null);
 
-  useEffect(() => {
-    drawerOpenRef.current = drawerOpen;
-  }, [drawerOpen]);
+  const sidebarWidth = Math.min(320, width * 0.45);
+  const sidebarTranslateX = useRef(new Animated.Value(sidebarWidth)).current;
 
   const headers = useMemo(
     () => ({
@@ -85,7 +82,10 @@ export default function App() {
   }
 
   useEffect(() => {
+    // Make status bar area match background / avoid black bars
+    RNStatusBar.setBarStyle("light-content");
     RNStatusBar.setHidden(true, "none");
+
     if (Platform.OS === "android") {
       RNStatusBar.setTranslucent(true);
       RNStatusBar.setBackgroundColor("transparent");
@@ -104,38 +104,67 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    drawerY.setValue(drawerClosedY);
-    setDrawerOpen(false);
-  }, [drawerClosedY, drawerY]);
+    const ticker = setInterval(() => setCurrentTime(new Date()), 1000);
+    return () => clearInterval(ticker);
+  }, []);
 
-  function animateDrawer(open: boolean) {
-    setDrawerOpen(open);
-    Animated.spring(drawerY, {
-      toValue: open ? 0 : drawerClosedY,
+  useEffect(() => {
+    activeScreenRef.current = activeScreen;
+  }, [activeScreen]);
+
+  useEffect(() => {
+    Animated.spring(screenY, {
+      toValue: activeScreen === "spotify" ? 0 : -height,
       useNativeDriver: true,
       speed: 20,
       bounciness: 0,
     }).start();
-  }
+  }, [activeScreen, height, screenY]);
 
-  const drawerPanResponder = useMemo(
+  const screenPanResponder = useMemo(
     () =>
       PanResponder.create({
-        onMoveShouldSetPanResponder: (_, g) =>
-          Math.abs(g.dy) > 12 && Math.abs(g.dy) > Math.abs(g.dx),
-        onPanResponderGrant: () => drawerY.stopAnimation(),
+        onMoveShouldSetPanResponder: (_, g) => Math.abs(g.dy) > 12 || Math.abs(g.dx) > 12,
+        onPanResponderGrant: () => {
+          screenY.stopAnimation();
+          gestureDirectionRef.current = null;
+        },
         onPanResponderMove: (_, g) => {
-          const start = drawerOpenRef.current ? 0 : drawerClosedY;
-          const next = Math.max(drawerClosedY, Math.min(0, start + g.dy));
-          drawerY.setValue(next);
+          if (!gestureDirectionRef.current) {
+            if (Math.abs(g.dy) > Math.abs(g.dx)) gestureDirectionRef.current = "vertical";
+            else if (Math.abs(g.dx) > Math.abs(g.dy)) gestureDirectionRef.current = "horizontal";
+          }
+          if (gestureDirectionRef.current === "vertical") {
+            const start = activeScreenRef.current === "spotify" ? 0 : -height;
+            const next = Math.max(-height, Math.min(0, start + g.dy));
+            screenY.setValue(next);
+          }
         },
         onPanResponderRelease: (_, g) => {
-          const shouldOpen = drawerOpenRef.current ? g.dy > -35 : g.dy > 35;
-          animateDrawer(shouldOpen);
+          const direction = gestureDirectionRef.current || "vertical";
+          gestureDirectionRef.current = null;
+          const absDy = Math.abs(g.dy);
+          const swipedVertical = absDy > Math.abs(g.dx);
+          const currentScreen = activeScreenRef.current;
+
+          if (direction === "vertical") {
+            if (currentScreen === "spotify" && g.dy < -35 && swipedVertical) setActiveScreen("clock");
+            else if (currentScreen === "clock" && g.dy > 35 && swipedVertical) setActiveScreen("spotify");
+            else {
+              Animated.spring(screenY, {
+                toValue: currentScreen === "spotify" ? 0 : -height,
+                useNativeDriver: true,
+                speed: 20,
+                bounciness: 0,
+              }).start();
+            }
+          } else if (direction === "horizontal") {
+            if (g.dx > 35 && currentScreen === "spotify") setSidebarOpen(true);
+            else if (g.dx < -35 && sidebarOpen) setSidebarOpen(false);
+          }
         },
-        onPanResponderTerminate: () => animateDrawer(drawerOpenRef.current),
       }),
-    [drawerClosedY]
+    [height, screenY, sidebarOpen]
   );
 
   const artUri = useMemo(() => {
@@ -152,109 +181,147 @@ export default function App() {
 
   const showEmpty = !data || data.spotifyFound === false;
 
+  const formattedTime = useMemo(
+    () =>
+      currentTime.toLocaleTimeString("en-US", {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      }),
+    [currentTime]
+  );
+
+  const formattedDate = useMemo(
+    () =>
+      currentTime.toLocaleDateString("en-US", {
+        weekday: "long",
+        month: "long",
+        day: "numeric",
+      }),
+    [currentTime]
+  );
+
+  useEffect(() => {
+    Animated.spring(sidebarTranslateX, {
+      toValue: sidebarOpen ? 0 : sidebarWidth,
+      useNativeDriver: true,
+      speed: 20,
+      bounciness: 0,
+    }).start();
+  }, [sidebarOpen, sidebarWidth, sidebarTranslateX]);
+
+  // Backgrounds now fixed to solid black (no average color)
+  const spotifyBackgroundColor = "#000";
+  const clockBackgroundColor = "#000";
+
   return (
     <SafeAreaProvider>
-      <SafeAreaView style={styles.safe} {...drawerPanResponder.panHandlers}>
-        <StatusBar hidden={true} animated={false} />
+      <SafeAreaView
+        style={[
+          styles.safe,
+          {
+            backgroundColor: activeScreen === "spotify" ? spotifyBackgroundColor : clockBackgroundColor,
+          },
+        ]}
+        edges={[]} // draw behind cutouts
+      >
+        <StatusBar hidden={true} translucent backgroundColor="transparent" />
 
-        {drawerOpen && <Pressable style={styles.scrim} onPress={() => animateDrawer(false)} />}
+        {sidebarOpen && (
+          <Pressable style={styles.sidebarOverlay} onPress={() => setSidebarOpen(false)} />
+        )}
 
         <Animated.View
           style={[
-            styles.drawer,
+            styles.sidebar,
             {
-              height: drawerHeight,
-              transform: [{ translateY: drawerY }],
+              width: sidebarWidth,
+              transform: [{ translateX: sidebarTranslateX }],
             },
           ]}
-          {...drawerPanResponder.panHandlers}
         >
-          <View style={styles.drawerHandle} />
-          <Text style={styles.drawerTitle}>Connection Settings</Text>
-          <View style={[styles.configCard, isLandscape && styles.configCardLandscape]}>
-            <TextInput
-              value={host}
-              onChangeText={setHost}
-              placeholder="Server URL"
-              placeholderTextColor="#7a7a7a"
-              style={[styles.input, isLandscape && styles.inputLandscape]}
-              autoCapitalize="none"
-            />
-            <TextInput
-              value={token}
-              onChangeText={setToken}
-              placeholder="Token"
-              placeholderTextColor="#7a7a7a"
-              style={[styles.input, isLandscape && styles.inputLandscape]}
-              autoCapitalize="none"
-            />
-          </View>
-          <Text style={styles.statusText} numberOfLines={1}>
-            {status}
-          </Text>
+          <Text style={styles.sidebarTitle}>Menu</Text>
+          <Text style={styles.sidebarStatus}>Status: {status}</Text>
         </Animated.View>
 
-        <View style={styles.screen}>
-          <View style={styles.topArea}>
-            <View style={styles.artBox}>
-              {artUri ? (
-                <Image source={{ uri: artUri }} style={styles.art} resizeMode="cover" />
-              ) : (
-                <View style={styles.artPlaceholder}>
-                  <Text style={styles.muted}>
-                    {!data ? "No data" : data.spotifyFound === false ? "Spotify not found" : "No artwork"}
-                  </Text>
+        <View style={styles.screenViewport} {...screenPanResponder.panHandlers}>
+          <Animated.View
+            style={[
+              styles.screenStack,
+              {
+                height: height * 2,
+                transform: [{ translateY: screenY }],
+              },
+            ]}
+          >
+            {/* Spotify screen */}
+            <View style={[styles.screen, { height, backgroundColor: spotifyBackgroundColor }]}>
+              <View style={styles.topArea}>
+                <View style={styles.artBox}>
+                  {artUri ? (
+                    <Image source={{ uri: artUri }} style={styles.art} resizeMode="cover" />
+                  ) : (
+                    <View style={styles.artPlaceholder}>
+                      <Text style={styles.muted}>
+                        {!data ? "No data" : data.spotifyFound === false ? "Spotify not found" : "No artwork"}
+                      </Text>
+                    </View>
+                  )}
                 </View>
-              )}
+
+                <View style={styles.metaBox}>
+                  <View style={styles.metaTextWrap}>
+                    <Text style={styles.title} numberOfLines={2}>
+                      {showEmpty ? "Not playing" : data.title}
+                    </Text>
+                    {!showEmpty && (
+                      <>
+                        <Text style={styles.artistText} numberOfLines={1}>
+                          {data.artist}
+                        </Text>
+                        <Text style={styles.albumText} numberOfLines={1}>
+                          {data.album}
+                        </Text>
+                      </>
+                    )}
+                  </View>
+
+                  <View style={styles.controls}>
+                    <Pressable style={styles.iconBtn} onPress={() => post("/previous")}>
+                      <Text style={styles.iconBtnText}>{"\u23EE"}</Text>
+                    </Pressable>
+
+                    <Pressable style={[styles.iconBtn, styles.playBtn]} onPress={() => post("/play-pause")}>
+                      <MaterialIcons name={data?.isPlaying ? "pause" : "play-arrow"} size={44} color="#fff" />
+                    </Pressable>
+
+                    <Pressable style={styles.iconBtn} onPress={() => post("/next")}>
+                      <Text style={styles.iconBtnText}>{"\u23ED"}</Text>
+                    </Pressable>
+                  </View>
+
+                  <View style={styles.progressWrap}>
+                    <View style={styles.progressTrack}>
+                      <View style={[styles.progressFill, { width: `${Math.round(progress * 100)}%` }]} />
+                    </View>
+                    <View style={styles.timeRow}>
+                      <Text style={styles.timeText}>{fmtMs(data?.positionMs || 0)}</Text>
+                      <Text style={styles.timeText}>{fmtMs(data?.durationMs || 0)}</Text>
+                    </View>
+                  </View>
+                </View>
+              </View>
             </View>
 
-            <View style={styles.metaBox}>
-              <View style={styles.metaTextWrap}>
-                <Text style={styles.title} numberOfLines={2}>
-                  {showEmpty ? "Not playing" : data.title}
-                </Text>
-                {!showEmpty && (
-                  <>
-                    <Text style={styles.artistText} numberOfLines={1}>
-                      {data.artist}
-                    </Text>
-                    <Text style={styles.albumText} numberOfLines={1}>
-                      {data.album}
-                    </Text>
-                  </>
-                )}
+            {/* Clock screen */}
+            <View style={[styles.screen, styles.clockScreen, { height, backgroundColor: clockBackgroundColor }]}>
+              <View style={styles.clockContent}>
+                <Text style={styles.clockTitle}>Current Time</Text>
+                <Text style={styles.clockTime}>{formattedTime}</Text>
+                <Text style={styles.clockDate}>{formattedDate}</Text>
               </View>
-
-              <View style={styles.metaControls}>
-                <View style={styles.controls}>
-                  <Pressable style={styles.iconBtn} onPress={() => post("/previous")}>
-                    <Text style={styles.iconBtnText}>{"\u23EE"}</Text>
-                  </Pressable>
-
-                  <Pressable style={[styles.iconBtn, styles.playBtn]} onPress={() => post("/play-pause")}>
-                    <MaterialIcons
-                      name={data?.isPlaying ? "pause" : "play-arrow"}
-                      size={40}
-                      color="#fff"
-                    />
-                  </Pressable>
-
-                  <Pressable style={styles.iconBtn} onPress={() => post("/next")}>
-                    <Text style={styles.iconBtnText}>{"\u23ED"}</Text>
-                  </Pressable>
-                </View>
-              </View>
-              <View style={styles.progressWrap}>
-                  <View style={styles.progressTrack}>
-                    <View style={[styles.progressFill, { width: `${Math.round(progress * 100)}%` }]} />
-                  </View>
-                  <View style={styles.timeRow}>
-                    <Text style={styles.timeText}>{fmtMs(data?.positionMs || 0)}</Text>
-                    <Text style={styles.timeText}>{fmtMs(data?.durationMs || 0)}</Text>
-                  </View>
-                </View>
             </View>
-          </View>
+          </Animated.View>
         </View>
       </SafeAreaView>
     </SafeAreaProvider>
@@ -262,55 +329,45 @@ export default function App() {
 }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: "#000" },
+  safe: { flex: 1, backgroundColor: "transparent" },
 
-  scrim: {
+  screenViewport: { flex: 1, overflow: "hidden" },
+  screenStack: { width: "100%", flexDirection: "column" },
+
+  sidebarOverlay: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0,0,0,0.55)",
-    zIndex: 4,
+    backgroundColor: "rgba(0,0,0,0.45)",
+    zIndex: 5,
   },
-
-  drawer: {
+  sidebar: {
     position: "absolute",
-    left: 0,
-    right: 0,
     top: 0,
-    zIndex: 7,
-    backgroundColor: "#0b0b0b",
-    borderBottomWidth: 1,
-    borderBottomColor: "#1e1e1e",
-    paddingHorizontal: 12,
-    paddingTop: 8,
+    bottom: 0,
+    right: 0,
+    backgroundColor: "#090909",
+    borderLeftWidth: 1,
+    borderLeftColor: "#1e1e1e",
+    padding: 16,
+    zIndex: 6,
+    justifyContent: "flex-start",
   },
-  drawerHandle: {
-    alignSelf: "center",
-    width: 56,
-    height: 5,
-    borderRadius: 999,
-    backgroundColor: "#2a2a2a",
-    marginBottom: 8,
-  },
-  drawerTitle: { color: "#fff", fontWeight: "700", fontSize: 14, marginBottom: 8 },
-  configCard: { backgroundColor: "#111", borderRadius: 14, padding: 12 },
-  configCardLandscape: { flexDirection: "row", gap: 10, alignItems: "center" },
-  input: {
-    backgroundColor: "#000",
+  sidebarTitle: {
     color: "#fff",
-    paddingVertical: 12,
-    paddingHorizontal: 12,
-    borderRadius: 10,
-    marginBottom: 10,
-    borderWidth: 1,
-    borderColor: "#222",
+    fontSize: 16,
+    fontWeight: "700",
+    marginBottom: 12,
   },
-  inputLandscape: { flex: 1, marginBottom: 0 },
-  statusText: { marginTop: 10, color: "#9a9a9a", fontSize: 12 },
+  sidebarStatus: {
+    color: "#8f8f8f",
+    fontSize: 12,
+    marginBottom: 12,
+  },
 
   screen: {
-    flex: 1,
-    backgroundColor: "#000",
+    width: "100%",
     paddingHorizontal: 14,
-    paddingTop: 6,
+    paddingTop: 30,
+    paddingLeft: 35,
     paddingBottom: 0,
     gap: 8,
   },
@@ -334,8 +391,10 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     backgroundColor: "#070707",
     borderWidth: 0,
-    padding: 14,
-    justifyContent: "space-between",
+    paddingVertical: 18,
+    paddingHorizontal: 14,
+    justifyContent: "center",
+    gap: 14,
   },
 
   metaTextWrap: { gap: 4 },
@@ -359,14 +418,11 @@ const styles = StyleSheet.create({
     letterSpacing: 0.1,
   },
 
-  metaControls: { gap: 8 },
-
-  // Bigger + better centered nav icons
   controls: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    paddingVertical: 6, // helps center within the metaBox space
+    paddingVertical: 6,
     gap: 18,
   },
   iconBtn: {
@@ -380,16 +436,14 @@ const styles = StyleSheet.create({
     borderColor: "rgba(255,255,255,0.18)",
   },
   iconBtnText: { color: "#fff", fontSize: 28, fontWeight: "800", marginTop: 1 },
-
   playBtn: {
     width: 82,
     height: 82,
-    backgroundColor: "rgba(255,255,255,0.20)",
+    backgroundColor: "rgba(255,255,255,0.2)",
     borderColor: "rgba(255,255,255,0.26)",
-    transform: [{ translateY: -2 }], // visually centers the larger middle button
+    transform: [{ translateY: -2 }],
   },
 
-  // Progress under controls
   progressWrap: { gap: 4 },
   progressTrack: {
     height: 7,
@@ -402,4 +456,22 @@ const styles = StyleSheet.create({
   timeText: { color: "#cfcfcf", fontSize: 11 },
 
   muted: { color: "#9a9a9a" },
+
+  clockScreen: {
+    justifyContent: "center",
+    alignItems: "center",
+    gap: 16,
+    paddingTop: 56,
+    paddingBottom: 50,
+  },
+  clockContent: {
+    flex: 1,
+    width: "100%",
+    justifyContent: "center",
+    alignItems: "center",
+    gap: 16,
+  },
+  clockTitle: { color: "#9b9b9b", fontSize: 16, letterSpacing: 2 },
+  clockTime: { color: "#fff", fontSize: 72, fontWeight: "700", letterSpacing: 1 },
+  clockDate: { color: "#b7b7b7", fontSize: 18 },
 });
