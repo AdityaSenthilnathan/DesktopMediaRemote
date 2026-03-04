@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -27,18 +27,30 @@ function fmtMs(ms: number) {
   return `${m}:${pad2(s)}`;
 }
 
+const SCREEN_ORDER = ["macros", "spotify", "clock"] as const;
+type Screen = (typeof SCREEN_ORDER)[number];
+const SCREEN_INDEX: Record<Screen, number> = {
+  macros: 0,
+  spotify: 1,
+  clock: 2,
+};
+
 export default function App() {
   const [host, setHost] = useState("http://192.168.86.63:3001"); // change this
   const [token, setToken] = useState("changeme");
   const [status, setStatus] = useState("Idle");
   const [data, setData] = useState<any>(null);
-  const [activeScreen, setActiveScreen] = useState<"spotify" | "clock">("spotify");
+  const [activeScreen, setActiveScreen] = useState<Screen>("spotify");
   const [currentTime, setCurrentTime] = useState(() => new Date());
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const { width, height } = useWindowDimensions();
 
-  const screenY = useRef(new Animated.Value(0)).current;
+  const getScreenTranslateY = useCallback(
+    (screen: Screen) => -SCREEN_INDEX[screen] * height,
+    [height]
+  );
+  const screenY = useRef(new Animated.Value(getScreenTranslateY("spotify"))).current;
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const activeScreenRef = useRef(activeScreen);
   const gestureDirectionRef = useRef<"vertical" | "horizontal" | null>(null);
@@ -114,12 +126,12 @@ export default function App() {
 
   useEffect(() => {
     Animated.spring(screenY, {
-      toValue: activeScreen === "spotify" ? 0 : -height,
+      toValue: getScreenTranslateY(activeScreen),
       useNativeDriver: true,
       speed: 20,
       bounciness: 0,
     }).start();
-  }, [activeScreen, height, screenY]);
+  }, [activeScreen, getScreenTranslateY, screenY]);
 
   const screenPanResponder = useMemo(
     () =>
@@ -135,8 +147,10 @@ export default function App() {
             else if (Math.abs(g.dx) > Math.abs(g.dy)) gestureDirectionRef.current = "horizontal";
           }
           if (gestureDirectionRef.current === "vertical") {
-            const start = activeScreenRef.current === "spotify" ? 0 : -height;
-            const next = Math.max(-height, Math.min(0, start + g.dy));
+            const start = getScreenTranslateY(activeScreenRef.current);
+            const minTranslate = getScreenTranslateY("clock");
+            const maxTranslate = getScreenTranslateY("macros");
+            const next = Math.max(minTranslate, Math.min(maxTranslate, start + g.dy));
             screenY.setValue(next);
           }
         },
@@ -146,25 +160,39 @@ export default function App() {
           const absDy = Math.abs(g.dy);
           const swipedVertical = absDy > Math.abs(g.dx);
           const currentScreen = activeScreenRef.current;
+          const snapBack = () => {
+            Animated.spring(screenY, {
+              toValue: getScreenTranslateY(currentScreen),
+              useNativeDriver: true,
+              speed: 20,
+              bounciness: 0,
+            }).start();
+          };
 
-          if (direction === "vertical") {
-            if (currentScreen === "spotify" && g.dy < -35 && swipedVertical) setActiveScreen("clock");
-            else if (currentScreen === "clock" && g.dy > 35 && swipedVertical) setActiveScreen("spotify");
-            else {
-              Animated.spring(screenY, {
-                toValue: currentScreen === "spotify" ? 0 : -height,
-                useNativeDriver: true,
-                speed: 20,
-                bounciness: 0,
-              }).start();
+          if (direction === "vertical" && swipedVertical) {
+            if (currentScreen === "spotify") {
+              if (g.dy > 35) setActiveScreen("macros");
+              else if (g.dy < -35) setActiveScreen("clock");
+              else snapBack();
+            } else if (currentScreen === "clock") {
+              if (g.dy > 35) setActiveScreen("spotify");
+              else snapBack();
+            } else if (currentScreen === "macros") {
+              if (g.dy < -35) setActiveScreen("spotify");
+              else snapBack();
+            } else {
+              snapBack();
             }
           } else if (direction === "horizontal") {
             if (g.dx > 35 && currentScreen === "spotify") setSidebarOpen(true);
             else if (g.dx < -35 && sidebarOpen) setSidebarOpen(false);
+            else snapBack();
+          } else {
+            snapBack();
           }
         },
       }),
-    [height, screenY, sidebarOpen]
+    [getScreenTranslateY, screenY, sidebarOpen]
   );
 
   const artUri = useMemo(() => {
@@ -212,17 +240,19 @@ export default function App() {
 
   // Backgrounds now fixed to solid black (no average color)
   const spotifyBackgroundColor = "#000";
+  const macrosBackgroundColor = "#050505";
   const clockBackgroundColor = "#000";
+  const safeBackgroundColor =
+    activeScreen === "clock"
+      ? clockBackgroundColor
+      : activeScreen === "macros"
+      ? macrosBackgroundColor
+      : spotifyBackgroundColor;
 
   return (
     <SafeAreaProvider>
       <SafeAreaView
-        style={[
-          styles.safe,
-          {
-            backgroundColor: activeScreen === "spotify" ? spotifyBackgroundColor : clockBackgroundColor,
-          },
-        ]}
+        style={[styles.safe, { backgroundColor: safeBackgroundColor }]}
         edges={[]} // draw behind cutouts
       >
         <StatusBar hidden={true} translucent backgroundColor="transparent" />
@@ -249,11 +279,24 @@ export default function App() {
             style={[
               styles.screenStack,
               {
-                height: height * 2,
+                height: height * SCREEN_ORDER.length,
                 transform: [{ translateY: screenY }],
               },
             ]}
           >
+            {/* Macros screen */}
+            <View
+              style={[
+                styles.screen,
+                styles.macrosScreen,
+                { height, backgroundColor: macrosBackgroundColor },
+              ]}
+            >
+              <View style={styles.macrosContent}>
+                <Text style={styles.macrosTitle}>Macros</Text>
+              </View>
+            </View>
+
             {/* Spotify screen */}
             <View style={[styles.screen, { height, backgroundColor: spotifyBackgroundColor }]}>
               <View style={styles.topArea}>
@@ -380,7 +423,7 @@ const styles = StyleSheet.create({
     maxHeight: "100%",
     borderRadius: 16,
     overflow: "hidden",
-    backgroundColor: "#050505",
+    backgroundColor: "#05050500",
     borderWidth: 0,
   },
   art: { width: "100%", height: "100%" },
@@ -389,7 +432,7 @@ const styles = StyleSheet.create({
   metaBox: {
     flex: 1.3,
     borderRadius: 16,
-    backgroundColor: "#070707",
+    backgroundColor: "#00000000",
     borderWidth: 0,
     paddingVertical: 18,
     paddingHorizontal: 14,
@@ -456,6 +499,27 @@ const styles = StyleSheet.create({
   timeText: { color: "#cfcfcf", fontSize: 11 },
 
   muted: { color: "#9a9a9a" },
+
+  macrosScreen: {
+    justifyContent: "center",
+    alignItems: "center",
+    paddingTop: 60,
+    paddingBottom: 40,
+    paddingHorizontal: 0,
+    paddingLeft: 0,
+    paddingRight: 0,
+  },
+  macrosContent: {
+    width: "100%",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  macrosTitle: {
+    color: "#fff",
+    fontSize: 42,
+    fontWeight: "800",
+    letterSpacing: 1.2,
+  },
 
   clockScreen: {
     justifyContent: "center",
