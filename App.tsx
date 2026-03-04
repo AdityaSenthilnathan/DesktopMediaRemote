@@ -1,3 +1,7 @@
+// App.tsx (phone)
+// Removed: Beep test tile, left/right arrow tiles (fallback), last macro result line, popups/banner, and the Reload button.
+// Macros are loaded automatically when you enter the Macros screen and on startup.
+
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
@@ -19,7 +23,6 @@ import * as ScreenOrientation from "expo-screen-orientation";
 function pad2(n: number) {
   return String(n).padStart(2, "0");
 }
-
 function fmtMs(ms: number) {
   const totalSec = Math.max(0, Math.floor((ms || 0) / 1000));
   const m = Math.floor(totalSec / 60);
@@ -29,11 +32,9 @@ function fmtMs(ms: number) {
 
 const SCREEN_ORDER = ["macros", "spotify", "clock"] as const;
 type Screen = (typeof SCREEN_ORDER)[number];
-const SCREEN_INDEX: Record<Screen, number> = {
-  macros: 0,
-  spotify: 1,
-  clock: 2,
-};
+const SCREEN_INDEX: Record<Screen, number> = { macros: 0, spotify: 1, clock: 2 };
+
+type MacroDef = { id: string; name: string; description?: string };
 
 export default function App() {
   const [host, setHost] = useState("http://192.168.86.63:3001"); // change this
@@ -44,12 +45,17 @@ export default function App() {
   const [currentTime, setCurrentTime] = useState(() => new Date());
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
+  // Macros state
+  const [macros, setMacros] = useState<MacroDef[]>([]);
+  const [macrosLoaded, setMacrosLoaded] = useState(false);
+
   const { width, height } = useWindowDimensions();
 
   const getScreenTranslateY = useCallback(
     (screen: Screen) => -SCREEN_INDEX[screen] * height,
     [height]
   );
+
   const screenY = useRef(new Animated.Value(getScreenTranslateY("spotify"))).current;
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const activeScreenRef = useRef(activeScreen);
@@ -58,12 +64,7 @@ export default function App() {
   const sidebarWidth = Math.min(320, width * 0.45);
   const sidebarTranslateX = useRef(new Animated.Value(sidebarWidth)).current;
 
-  const headers = useMemo(
-    () => ({
-      Authorization: `Bearer ${token}`,
-    }),
-    [token]
-  );
+  const headers = useMemo(() => ({ Authorization: `Bearer ${token}` }), [token]);
 
   async function getNowPlaying() {
     try {
@@ -77,7 +78,7 @@ export default function App() {
       setData(json);
       setStatus("OK");
     } catch (e: any) {
-      setStatus(e.message || "Error");
+      setStatus(e?.message || "Error");
       setData(null);
     }
   }
@@ -86,15 +87,90 @@ export default function App() {
     try {
       setStatus("Sending...");
       const res = await fetch(`${host}${path}`, { method: "POST", headers });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`HTTP ${res.status} ${text}`);
+      }
       await getNowPlaying();
     } catch (e: any) {
-      setStatus(e.message || "Error");
+      setStatus(e?.message || "Error");
+    }
+  }
+
+  async function fetchMacros() {
+    try {
+      setStatus("Loading macros...");
+      const res = await fetch(`${host}/macros`, { headers });
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`HTTP ${res.status} ${text}`);
+      }
+
+      const raw = await res.json();
+
+      // Normalize server output (Id/Name/Description OR id/name/description)
+      const list: MacroDef[] = (Array.isArray(raw) ? raw : [])
+        .map((m: any) => ({
+          id: String(m.id ?? m.Id ?? "").trim(),
+          name: String(m.name ?? m.Name ?? "").trim(),
+          description: String(m.description ?? m.Description ?? "").trim(),
+        }))
+        .filter((m) => m.id.length > 0);
+
+      setMacros(list);
+      setMacrosLoaded(true);
+      setStatus("OK");
+    } catch (e: any) {
+      // Minimal fallback (removed beep/left/right)
+      setMacros([
+        { id: "mute", name: "Mute", description: "Ctrl+Shift+M" },
+        { id: "show-desktop", name: "Show Desktop", description: "Win+D" },
+        { id: "alt-tab", name: "Alt+Tab", description: "Alt+Tab" },
+      ]);
+      setMacrosLoaded(false);
+      setStatus(e?.message || "Macro load failed");
+    }
+  }
+
+  async function runMacro(id: string) {
+    try {
+      const clean = String(id ?? "").trim();
+      if (!clean) return;
+
+      setStatus("Sending...");
+      const res = await fetch(`${host}/macros/run`, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json; charset=utf-8" },
+        body: JSON.stringify({ id: clean }),
+      });
+
+      const text = await res.text().catch(() => "");
+
+      if (!res.ok) {
+        // Keep it quiet: just surface as status text
+        setStatus(`HTTP ${res.status} ${text}`);
+        return;
+      }
+
+      // If server returns { ok:false, error:"..." } show it in status
+      try {
+        const payload = text ? JSON.parse(text) : {};
+        if (payload && payload.ok === false && payload.error) {
+          setStatus(String(payload.error));
+          return;
+        }
+      } catch {
+        // ignore
+      }
+
+      setStatus("OK");
+    } catch (e: any) {
+      setStatus(e?.message || "Macro run failed");
     }
   }
 
   useEffect(() => {
-    // Make status bar area match background / avoid black bars
     RNStatusBar.setBarStyle("light-content");
     RNStatusBar.setHidden(true, "none");
 
@@ -106,9 +182,13 @@ export default function App() {
     getNowPlaying();
     timerRef.current = setInterval(getNowPlaying, 1000);
 
+    // Load macros once on startup
+    fetchMacros();
+
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [host, token]);
 
   useEffect(() => {
@@ -131,6 +211,10 @@ export default function App() {
       speed: 20,
       bounciness: 0,
     }).start();
+
+    // Refresh macros when you navigate to the macros screen (no button)
+    if (activeScreen === "macros") fetchMacros();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeScreen, getScreenTranslateY, screenY]);
 
   const screenPanResponder = useMemo(
@@ -157,9 +241,9 @@ export default function App() {
         onPanResponderRelease: (_, g) => {
           const direction = gestureDirectionRef.current || "vertical";
           gestureDirectionRef.current = null;
-          const absDy = Math.abs(g.dy);
-          const swipedVertical = absDy > Math.abs(g.dx);
+          const swipedVertical = Math.abs(g.dy) > Math.abs(g.dx);
           const currentScreen = activeScreenRef.current;
+
           const snapBack = () => {
             Animated.spring(screenY, {
               toValue: getScreenTranslateY(currentScreen),
@@ -238,7 +322,6 @@ export default function App() {
     }).start();
   }, [sidebarOpen, sidebarWidth, sidebarTranslateX]);
 
-  // Backgrounds now fixed to solid black (no average color)
   const spotifyBackgroundColor = "#000";
   const macrosBackgroundColor = "#050505";
   const clockBackgroundColor = "#000";
@@ -251,49 +334,48 @@ export default function App() {
 
   return (
     <SafeAreaProvider>
-      <SafeAreaView
-        style={[styles.safe, { backgroundColor: safeBackgroundColor }]}
-        edges={[]} // draw behind cutouts
-      >
+      <SafeAreaView style={[styles.safe, { backgroundColor: safeBackgroundColor }]} edges={[]}>
         <StatusBar hidden={true} translucent backgroundColor="transparent" />
 
-        {sidebarOpen && (
-          <Pressable style={styles.sidebarOverlay} onPress={() => setSidebarOpen(false)} />
-        )}
+        {sidebarOpen && <Pressable style={styles.sidebarOverlay} onPress={() => setSidebarOpen(false)} />}
 
         <Animated.View
           style={[
             styles.sidebar,
-            {
-              width: sidebarWidth,
-              transform: [{ translateX: sidebarTranslateX }],
-            },
+            { width: sidebarWidth, transform: [{ translateX: sidebarTranslateX }] },
           ]}
         >
           <Text style={styles.sidebarTitle}>Menu</Text>
           <Text style={styles.sidebarStatus}>Status: {status}</Text>
+          <Text style={styles.sidebarHint}>Swipe left to close</Text>
         </Animated.View>
 
         <View style={styles.screenViewport} {...screenPanResponder.panHandlers}>
           <Animated.View
             style={[
               styles.screenStack,
-              {
-                height: height * SCREEN_ORDER.length,
-                transform: [{ translateY: screenY }],
-              },
+              { height: height * SCREEN_ORDER.length, transform: [{ translateY: screenY }] },
             ]}
           >
             {/* Macros screen */}
-            <View
-              style={[
-                styles.screen,
-                styles.macrosScreen,
-                { height, backgroundColor: macrosBackgroundColor },
-              ]}
-            >
-              <View style={styles.macrosContent}>
+            <View style={[styles.screen, styles.macrosScreen, { height, backgroundColor: macrosBackgroundColor }]}>
+              <View style={styles.macrosHeaderRow}>
                 <Text style={styles.macrosTitle}>Macros</Text>
+              </View>
+
+              <Text style={styles.macrosSub}>Tap a macro to run it on the PC.</Text>
+
+              <View style={styles.macroGrid}>
+                {macros.map((m) => (
+                  <Pressable key={m.id} style={styles.macroTile} onPress={() => runMacro(m.id)}>
+                    <Text style={styles.macroName} numberOfLines={1}>
+                      {m.name}
+                    </Text>
+                    <Text style={styles.macroDesc} numberOfLines={1}>
+                      {m.description || m.id}
+                    </Text>
+                  </Pressable>
+                ))}
               </View>
             </View>
 
@@ -394,17 +476,9 @@ const styles = StyleSheet.create({
     zIndex: 6,
     justifyContent: "flex-start",
   },
-  sidebarTitle: {
-    color: "#fff",
-    fontSize: 16,
-    fontWeight: "700",
-    marginBottom: 12,
-  },
-  sidebarStatus: {
-    color: "#8f8f8f",
-    fontSize: 12,
-    marginBottom: 12,
-  },
+  sidebarTitle: { color: "#fff", fontSize: 16, fontWeight: "700", marginBottom: 12 },
+  sidebarStatus: { color: "#8f8f8f", fontSize: 12, marginBottom: 8 },
+  sidebarHint: { color: "#6f6f6f", fontSize: 12 },
 
   screen: {
     width: "100%",
@@ -441,25 +515,9 @@ const styles = StyleSheet.create({
   },
 
   metaTextWrap: { gap: 4 },
-  title: {
-    color: "#f8f8f8",
-    fontSize: 24,
-    fontWeight: "800",
-    lineHeight: 28,
-    letterSpacing: 0.2,
-  },
-  artistText: {
-    color: "#e6e6e6",
-    fontSize: 15,
-    fontWeight: "600",
-    letterSpacing: 0.15,
-  },
-  albumText: {
-    color: "#a8a8a8",
-    fontSize: 13,
-    fontWeight: "500",
-    letterSpacing: 0.1,
-  },
+  title: { color: "#f8f8f8", fontSize: 24, fontWeight: "800", lineHeight: 28, letterSpacing: 0.2 },
+  artistText: { color: "#e6e6e6", fontSize: 15, fontWeight: "600", letterSpacing: 0.15 },
+  albumText: { color: "#a8a8a8", fontSize: 13, fontWeight: "500", letterSpacing: 0.1 },
 
   controls: {
     flexDirection: "row",
@@ -488,12 +546,7 @@ const styles = StyleSheet.create({
   },
 
   progressWrap: { gap: 4 },
-  progressTrack: {
-    height: 7,
-    backgroundColor: "rgba(255,255,255,0.14)",
-    borderRadius: 999,
-    overflow: "hidden",
-  },
+  progressTrack: { height: 7, backgroundColor: "rgba(255,255,255,0.14)", borderRadius: 999, overflow: "hidden" },
   progressFill: { height: "100%", backgroundColor: "#fff", borderRadius: 999 },
   timeRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   timeText: { color: "#cfcfcf", fontSize: 11 },
@@ -501,25 +554,39 @@ const styles = StyleSheet.create({
   muted: { color: "#9a9a9a" },
 
   macrosScreen: {
-    justifyContent: "center",
-    alignItems: "center",
-    paddingTop: 60,
-    paddingBottom: 40,
-    paddingHorizontal: 0,
-    paddingLeft: 0,
-    paddingRight: 0,
+    justifyContent: "flex-start",
+    alignItems: "flex-start",
+    paddingTop: 34,
+    paddingBottom: 22,
   },
-  macrosContent: {
+  macrosHeaderRow: {
     width: "100%",
+    flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
+    justifyContent: "space-between",
+    paddingRight: 14,
   },
-  macrosTitle: {
-    color: "#fff",
-    fontSize: 42,
-    fontWeight: "800",
-    letterSpacing: 1.2,
+  macrosTitle: { color: "#fff", fontSize: 34, fontWeight: "800", letterSpacing: 0.6 },
+  macrosSub: { color: "#bdbdbd", fontSize: 12, marginTop: 6, marginBottom: 12 },
+
+  macroGrid: {
+    width: "100%",
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+    paddingRight: 14,
   },
+  macroTile: {
+    width: 220,
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+    borderRadius: 16,
+    backgroundColor: "rgba(255,255,255,0.10)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.16)",
+  },
+  macroName: { color: "#ffffff", fontSize: 16, fontWeight: "800" },
+  macroDesc: { marginTop: 4, color: "#cfcfcf", fontSize: 12, fontWeight: "600" },
 
   clockScreen: {
     justifyContent: "center",
@@ -528,13 +595,7 @@ const styles = StyleSheet.create({
     paddingTop: 56,
     paddingBottom: 50,
   },
-  clockContent: {
-    flex: 1,
-    width: "100%",
-    justifyContent: "center",
-    alignItems: "center",
-    gap: 16,
-  },
+  clockContent: { flex: 1, width: "100%", justifyContent: "center", alignItems: "center", gap: 16 },
   clockTitle: { color: "#9b9b9b", fontSize: 16, letterSpacing: 2 },
   clockTime: { color: "#fff", fontSize: 72, fontWeight: "700", letterSpacing: 1 },
   clockDate: { color: "#b7b7b7", fontSize: 18 },
