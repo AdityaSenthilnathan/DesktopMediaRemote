@@ -19,6 +19,7 @@ import { StatusBar } from "expo-status-bar";
 import { MaterialIcons } from "@expo/vector-icons";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import * as ScreenOrientation from "expo-screen-orientation";
+import * as NavigationBar from "expo-navigation-bar";
 
 function pad2(n: number) {
   return String(n).padStart(2, "0");
@@ -30,9 +31,9 @@ function fmtMs(ms: number) {
   return `${m}:${pad2(s)}`;
 }
 
-const SCREEN_ORDER = ["macros", "spotify", "clock"] as const;
+const SCREEN_ORDER = ["macros", "clock", "spotify"] as const;
 type Screen = (typeof SCREEN_ORDER)[number];
-const SCREEN_INDEX: Record<Screen, number> = { macros: 0, spotify: 1, clock: 2 };
+const SCREEN_INDEX: Record<Screen, number> = { macros: 0, clock: 1, spotify: 2 };
 
 type MacroDef = { id: string; name: string; description?: string };
 
@@ -192,6 +193,21 @@ export default function App() {
   }, [host, token]);
 
   useEffect(() => {
+    if (Platform.OS !== "android") return;
+
+    const hideSystemBars = async () => {
+      try {
+        await NavigationBar.setBehaviorAsync("overlay-swipe");
+        await NavigationBar.setVisibilityAsync("hidden");
+      } catch (error) {
+        console.warn("Unable to hide navigation bar", error);
+      }
+    };
+
+    hideSystemBars();
+  }, []);
+
+  useEffect(() => {
     ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE).catch(() => {});
   }, []);
 
@@ -232,8 +248,8 @@ export default function App() {
           }
           if (gestureDirectionRef.current === "vertical") {
             const start = getScreenTranslateY(activeScreenRef.current);
-            const minTranslate = getScreenTranslateY("clock");
-            const maxTranslate = getScreenTranslateY("macros");
+            const minTranslate = getScreenTranslateY(SCREEN_ORDER[SCREEN_ORDER.length - 1]);
+            const maxTranslate = getScreenTranslateY(SCREEN_ORDER[0]);
             const next = Math.max(minTranslate, Math.min(maxTranslate, start + g.dy));
             screenY.setValue(next);
           }
@@ -254,19 +270,14 @@ export default function App() {
           };
 
           if (direction === "vertical" && swipedVertical) {
-            if (currentScreen === "spotify") {
-              if (g.dy > 35) setActiveScreen("macros");
-              else if (g.dy < -35) setActiveScreen("clock");
-              else snapBack();
-            } else if (currentScreen === "clock") {
-              if (g.dy > 35) setActiveScreen("spotify");
-              else snapBack();
-            } else if (currentScreen === "macros") {
-              if (g.dy < -35) setActiveScreen("spotify");
-              else snapBack();
-            } else {
-              snapBack();
-            }
+            const currentIndex = SCREEN_INDEX[currentScreen];
+            const previousScreen = currentIndex > 0 ? SCREEN_ORDER[currentIndex - 1] : null;
+            const nextScreen =
+              currentIndex < SCREEN_ORDER.length - 1 ? SCREEN_ORDER[currentIndex + 1] : null;
+
+            if (g.dy > 35 && previousScreen) setActiveScreen(previousScreen);
+            else if (g.dy < -35 && nextScreen) setActiveScreen(nextScreen);
+            else snapBack();
           } else if (direction === "horizontal") {
             if (g.dx > 35 && currentScreen === "spotify") setSidebarOpen(true);
             else if (g.dx < -35 && sidebarOpen) setSidebarOpen(false);
@@ -379,6 +390,15 @@ export default function App() {
               </View>
             </View>
 
+            {/* Clock screen */}
+            <View style={[styles.screen, styles.clockScreen, { height, backgroundColor: clockBackgroundColor }]}>
+              <View style={styles.clockContent}>
+                <Text style={styles.clockTitle}>Current Time</Text>
+                <Text style={styles.clockTime}>{formattedTime}</Text>
+                <Text style={styles.clockDate}>{formattedDate}</Text>
+              </View>
+            </View>
+
             {/* Spotify screen */}
             <View style={[styles.screen, { height, backgroundColor: spotifyBackgroundColor }]}>
               <View style={styles.topArea}>
@@ -435,15 +455,6 @@ export default function App() {
                     </View>
                   </View>
                 </View>
-              </View>
-            </View>
-
-            {/* Clock screen */}
-            <View style={[styles.screen, styles.clockScreen, { height, backgroundColor: clockBackgroundColor }]}>
-              <View style={styles.clockContent}>
-                <Text style={styles.clockTitle}>Current Time</Text>
-                <Text style={styles.clockTime}>{formattedTime}</Text>
-                <Text style={styles.clockDate}>{formattedDate}</Text>
               </View>
             </View>
           </Animated.View>
