@@ -87,7 +87,7 @@ export default function App() {
   );
 
   const screenY = useRef(new Animated.Value(getScreenTranslateY("spotify"))).current;
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const activeScreenRef = useRef(activeScreen);
   const gestureDirectionRef = useRef<"vertical" | "horizontal" | null>(null);
 
