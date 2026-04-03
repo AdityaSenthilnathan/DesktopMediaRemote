@@ -14,6 +14,7 @@ import {
   Platform,
   Animated,
   PanResponder,
+  AppState,
 } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import { MaterialIcons } from "@expo/vector-icons";
@@ -188,12 +189,19 @@ export default function App() {
       try {
         await NavigationBar.setBehaviorAsync("overlay-swipe");
         await NavigationBar.setVisibilityAsync("hidden");
+        RNStatusBar.setHidden(true, "none");
       } catch (error) {
-        console.warn("Unable to hide navigation bar", error);
+        console.warn("Unable to hide system bars", error);
       }
     };
 
     hideSystemBars();
+
+    const sub = AppState.addEventListener("change", (state) => {
+      if (state === "active") hideSystemBars();
+    });
+
+    return () => sub.remove();
   }, []);
 
   useEffect(() => {
@@ -321,14 +329,9 @@ export default function App() {
   }, [sidebarOpen, sidebarWidth, sidebarTranslateX]);
 
   const spotifyBackgroundColor = "#000";
-  const macrosBackgroundColor = "#050505";
+  const macrosBackgroundColor = "#000";
   const clockBackgroundColor = "#000";
-  const safeBackgroundColor =
-    activeScreen === "clock"
-      ? clockBackgroundColor
-      : activeScreen === "macros"
-      ? macrosBackgroundColor
-      : spotifyBackgroundColor;
+  const safeBackgroundColor = "#000";
 
   return (
     <SafeAreaProvider>
