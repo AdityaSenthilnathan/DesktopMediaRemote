@@ -31,11 +31,42 @@ function fmtMs(ms: number) {
   return `${m}:${pad2(s)}`;
 }
 
-const SCREEN_ORDER = ["macros", "clock", "spotify"] as const;
+const SCREEN_ORDER = ["macros", "spotify", "clock"] as const;
 type Screen = (typeof SCREEN_ORDER)[number];
-const SCREEN_INDEX: Record<Screen, number> = { macros: 0, clock: 1, spotify: 2 };
+const SCREEN_INDEX: Record<Screen, number> = { macros: 0, spotify: 1, clock: 2 };
 
-type MacroDef = { id: string; name: string; description?: string };
+const MACRO_CATEGORIES = [
+  {
+    id: "system",
+    label: "SYSTEM",
+    accent: "#4a9eff",
+    items: [
+      { id: "mic-mute", name: "Mute Mic", icon: "mic-off" as const },
+      { id: "show-desktop", name: "Desktop", icon: "desktop-windows" as const },
+    ],
+  },
+  {
+    id: "desktop",
+    label: "VIRTUAL DESKTOP",
+    accent: "#a78bfa",
+    items: [
+      { id: "desktop-left", name: "Desk Left", icon: "arrow-back" as const },
+      { id: "desktop-right", name: "Desk Right", icon: "arrow-forward" as const },
+    ],
+  },
+  {
+    id: "apps",
+    label: "APPS",
+    accent: "#34d399",
+    items: [
+      { id: "open-spotify", name: "Spotify", icon: "music-note" as const },
+      { id: "open-discord", name: "Discord", icon: "forum" as const },
+      { id: "open-firefox", name: "Firefox", icon: "language" as const },
+      { id: "open-vscode", name: "VS Code", icon: "code" as const },
+      { id: "open-files", name: "Files", icon: "folder" as const },
+    ],
+  },
+] as const;
 
 export default function App() {
   const [host, setHost] = useState("http://192.168.86.63:3001"); // change this
@@ -46,9 +77,6 @@ export default function App() {
   const [currentTime, setCurrentTime] = useState(() => new Date());
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
-  // Macros state
-  const [macros, setMacros] = useState<MacroDef[]>([]);
-  const [macrosLoaded, setMacrosLoaded] = useState(false);
 
   const { width, height } = useWindowDimensions();
 
@@ -95,42 +123,6 @@ export default function App() {
       await getNowPlaying();
     } catch (e: any) {
       setStatus(e?.message || "Error");
-    }
-  }
-
-  async function fetchMacros() {
-    try {
-      setStatus("Loading macros...");
-      const res = await fetch(`${host}/macros`, { headers });
-
-      if (!res.ok) {
-        const text = await res.text().catch(() => "");
-        throw new Error(`HTTP ${res.status} ${text}`);
-      }
-
-      const raw = await res.json();
-
-      // Normalize server output (Id/Name/Description OR id/name/description)
-      const list: MacroDef[] = (Array.isArray(raw) ? raw : [])
-        .map((m: any) => ({
-          id: String(m.id ?? m.Id ?? "").trim(),
-          name: String(m.name ?? m.Name ?? "").trim(),
-          description: String(m.description ?? m.Description ?? "").trim(),
-        }))
-        .filter((m) => m.id.length > 0);
-
-      setMacros(list);
-      setMacrosLoaded(true);
-      setStatus("OK");
-    } catch (e: any) {
-      // Minimal fallback (removed beep/left/right)
-      setMacros([
-        { id: "mute", name: "Mute", description: "Ctrl+Shift+M" },
-        { id: "show-desktop", name: "Show Desktop", description: "Win+D" },
-        { id: "alt-tab", name: "Alt+Tab", description: "Alt+Tab" },
-      ]);
-      setMacrosLoaded(false);
-      setStatus(e?.message || "Macro load failed");
     }
   }
 
@@ -183,9 +175,6 @@ export default function App() {
     getNowPlaying();
     timerRef.current = setInterval(getNowPlaying, 1000);
 
-    // Load macros once on startup
-    fetchMacros();
-
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
@@ -228,8 +217,6 @@ export default function App() {
       bounciness: 0,
     }).start();
 
-    // Refresh macros when you navigate to the macros screen (no button)
-    if (activeScreen === "macros") fetchMacros();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeScreen, getScreenTranslateY, screenY]);
 
@@ -370,50 +357,61 @@ export default function App() {
           >
             {/* Macros screen */}
             <View style={[styles.screen, styles.macrosScreen, { height, backgroundColor: macrosBackgroundColor }]}>
-              <View style={styles.macrosHeaderRow}>
-                <Text style={styles.macrosTitle}>Macros</Text>
-              </View>
+              <Text style={styles.macrosTitle}>Macros</Text>
+              <View style={styles.macrosColumns}>
+                {/* Left column: System + Virtual Desktop */}
+                <View style={styles.macrosLeftCol}>
+                  {MACRO_CATEGORIES.filter((c) => c.id !== "apps").map((cat) => (
+                    <View key={cat.id} style={styles.macroCategory}>
+                      <Text style={[styles.macroCatLabel, { color: cat.accent }]}>{cat.label}</Text>
+                      <View style={styles.macroCatRow}>
+                        {cat.items.map((item) => (
+                          <Pressable
+                            key={item.id}
+                            style={({ pressed }) => [
+                              styles.macroIconTile,
+                              { borderColor: pressed ? cat.accent : "rgba(255,255,255,0.10)" },
+                              pressed && { backgroundColor: "rgba(255,255,255,0.06)" },
+                            ]}
+                            onPress={() => runMacro(item.id)}
+                          >
+                            <MaterialIcons name={item.icon} size={26} color={cat.accent} />
+                            <Text style={styles.macroIconTileName}>{item.name}</Text>
+                          </Pressable>
+                        ))}
+                      </View>
+                    </View>
+                  ))}
+                </View>
 
-              <Text style={styles.macrosSub}>Tap a macro to run it on the PC.</Text>
-
-              <View style={styles.macroGrid}>
-                {macros.map((m) => (
-                  <Pressable key={m.id} style={styles.macroTile} onPress={() => runMacro(m.id)}>
-                    <Text style={styles.macroName} numberOfLines={1}>
-                      {m.name}
-                    </Text>
-                    <Text style={styles.macroDesc} numberOfLines={1}>
-                      {m.description || m.id}
-                    </Text>
-                  </Pressable>
+                {/* Right column: Apps */}
+                {MACRO_CATEGORIES.filter((c) => c.id === "apps").map((cat) => (
+                  <View key={cat.id} style={styles.macrosRightCol}>
+                    <Text style={[styles.macroCatLabel, { color: cat.accent }]}>{cat.label}</Text>
+                    <View style={styles.macroAppGrid}>
+                      {cat.items.map((item) => (
+                        <Pressable
+                          key={item.id}
+                          style={({ pressed }) => [
+                            styles.macroAppTile,
+                            { borderColor: pressed ? cat.accent : "rgba(255,255,255,0.10)" },
+                            pressed && { backgroundColor: "rgba(255,255,255,0.06)" },
+                          ]}
+                          onPress={() => runMacro(item.id)}
+                        >
+                          <MaterialIcons name={item.icon} size={30} color={cat.accent} />
+                          <Text style={styles.macroIconTileName}>{item.name}</Text>
+                        </Pressable>
+                      ))}
+                    </View>
+                  </View>
                 ))}
-              </View>
-            </View>
-
-            {/* Clock screen */}
-            <View style={[styles.screen, styles.clockScreen, { height, backgroundColor: clockBackgroundColor }]}>
-              <View style={styles.clockContent}>
-                <Text style={styles.clockTitle}>Current Time</Text>
-                <Text style={styles.clockTime}>{formattedTime}</Text>
-                <Text style={styles.clockDate}>{formattedDate}</Text>
               </View>
             </View>
 
             {/* Spotify screen */}
             <View style={[styles.screen, { height, backgroundColor: spotifyBackgroundColor }]}>
               <View style={styles.topArea}>
-                <View style={styles.artBox}>
-                  {artUri ? (
-                    <Image source={{ uri: artUri }} style={styles.art} resizeMode="cover" />
-                  ) : (
-                    <View style={styles.artPlaceholder}>
-                      <Text style={styles.muted}>
-                        {!data ? "No data" : data.spotifyFound === false ? "Spotify not found" : "No artwork"}
-                      </Text>
-                    </View>
-                  )}
-                </View>
-
                 <View style={styles.metaBox}>
                   <View style={styles.metaTextWrap}>
                     <Text style={styles.title} numberOfLines={2}>
@@ -455,6 +453,27 @@ export default function App() {
                     </View>
                   </View>
                 </View>
+
+                <View style={styles.artBox}>
+                  {artUri ? (
+                    <Image source={{ uri: artUri }} style={styles.art} resizeMode="cover" />
+                  ) : (
+                    <View style={styles.artPlaceholder}>
+                      <Text style={styles.muted}>
+                        {!data ? "No data" : data.spotifyFound === false ? "Spotify not found" : "No artwork"}
+                      </Text>
+                    </View>
+                  )}
+                </View>
+              </View>
+            </View>
+
+            {/* Clock screen */}
+            <View style={[styles.screen, styles.clockScreen, { height, backgroundColor: clockBackgroundColor }]}>
+              <View style={styles.clockContent}>
+                <Text style={styles.clockTitle}>Current Time</Text>
+                <Text style={styles.clockTime}>{formattedTime}</Text>
+                <Text style={styles.clockDate}>{formattedDate}</Text>
               </View>
             </View>
           </Animated.View>
@@ -567,37 +586,42 @@ const styles = StyleSheet.create({
   macrosScreen: {
     justifyContent: "flex-start",
     alignItems: "flex-start",
-    paddingTop: 34,
-    paddingBottom: 22,
+    paddingTop: 28,
+    paddingBottom: 16,
   },
-  macrosHeaderRow: {
-    width: "100%",
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingRight: 14,
-  },
-  macrosTitle: { color: "#fff", fontSize: 34, fontWeight: "800", letterSpacing: 0.6 },
-  macrosSub: { color: "#bdbdbd", fontSize: 12, marginTop: 6, marginBottom: 12 },
+  macrosTitle: { color: "#fff", fontSize: 30, fontWeight: "800", letterSpacing: 0.6, marginBottom: 14 },
 
-  macroGrid: {
-    width: "100%",
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 10,
-    paddingRight: 14,
-  },
-  macroTile: {
-    width: 220,
+  macrosColumns: { flex: 1, flexDirection: "row", gap: 20, width: "100%", paddingRight: 14 },
+  macrosLeftCol: { flex: 1, gap: 16 },
+  macrosRightCol: { flex: 1.4 },
+
+  macroCategory: { gap: 8 },
+  macroCatLabel: { fontSize: 10, fontWeight: "700", letterSpacing: 1.5 },
+  macroCatRow: { flexDirection: "row", gap: 10 },
+
+  macroIconTile: {
+    flex: 1,
     paddingVertical: 14,
-    paddingHorizontal: 14,
-    borderRadius: 16,
-    backgroundColor: "rgba(255,255,255,0.10)",
+    paddingHorizontal: 10,
+    borderRadius: 14,
+    backgroundColor: "rgba(255,255,255,0.06)",
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.16)",
+    alignItems: "center",
+    gap: 8,
   },
-  macroName: { color: "#ffffff", fontSize: 16, fontWeight: "800" },
-  macroDesc: { marginTop: 4, color: "#cfcfcf", fontSize: 12, fontWeight: "600" },
+  macroIconTileName: { color: "#e0e0e0", fontSize: 12, fontWeight: "600", textAlign: "center" },
+
+  macroAppGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10, marginTop: 8 },
+  macroAppTile: {
+    width: 90,
+    paddingVertical: 14,
+    paddingHorizontal: 8,
+    borderRadius: 14,
+    backgroundColor: "rgba(255,255,255,0.06)",
+    borderWidth: 1,
+    alignItems: "center",
+    gap: 8,
+  },
 
   clockScreen: {
     justifyContent: "center",
