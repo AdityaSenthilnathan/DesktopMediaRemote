@@ -1,6 +1,3 @@
-// App.tsx (phone)
-// Removed: Beep test tile, left/right arrow tiles (fallback), last macro result line, popups/banner, and the Reload button.
-// Macros are loaded automatically when you enter the Macros screen and on startup.
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
